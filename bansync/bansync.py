@@ -1,7 +1,6 @@
 import asyncio
 import discord
 from discord.ext import commands
-from .utils import checks
 from __main__ import settings
 from cogs.utils.chat_formatting import box, pagify
 from typing import Union
@@ -53,9 +52,10 @@ class BanSync:
 
         issuer_canban = issuer_isowner
         if issuer is not None:
-            issuer |= admin_role in issuer.roles
-            issuer |= issuer == server.owner
-            issuer.server_permissions.ban_members
+            issuer_canban |= admin_role in issuer.roles \
+                and admin_role is not None
+            issuer_canban |= issuer == server.owner
+            issuer_canban |= issuer.server_permissions.ban_members
 
         return issuer_canban and modset_allows and bot_has_perms
 
@@ -107,12 +107,12 @@ class BanSync:
                         except Exception:
                             pass
 
-    @checks.is_owner()
     @commands.command(name='bansync', pass_context=True)
     async def bansync(self, ctx, auto: bool=False):
         """
         syncs bans across servers
         """
+        issuer_id = ctx.message.author.id
         servers = []
         if not auto:
             while True:
@@ -124,8 +124,8 @@ class BanSync:
                 else:
                     servers.append(s)
         elif auto is True:
-            servers = [s for s in self.bot.servers
-                       if s.me.server_permissions.ban_members]
+            servers = filter(  # Give it an ID that can't exist intentionally
+                lambda s: self.can_ban("42", issuer_id, s), self.bot.servers)
 
         if len(servers) < 2:
             return await self.bot.whisper('I need at least 2 servers to sync')
@@ -145,6 +145,8 @@ class BanSync:
             for k, v in bans.items():
                 to_ban.extend([m for m in v if m not in bans[server.id]])
             for user in to_ban:
+                if not self.can_ban(user.id, issuer_id, server):
+                    continue
                 member = server.get_member(user.id)
                 if member is not None:
                     try:
@@ -178,7 +180,11 @@ class BanSync:
 
     async def discover_server(self, author: discord.User):
         output = ""
-        servers = sorted(self.bot.servers, key=lambda s: s.name)
+        servers = sorted(
+            filter(  # Give it an ID that can't exist intentionally
+                lambda s: self.can_ban("42", author.id, s),
+                self.bot.servers), key=lambda s: s.name
+        )
         for i, server in enumerate(servers, 1):
             output += "{}: {}\n".format(i, server.name)
         output += "Select a server to add to the sync list by number, "\
