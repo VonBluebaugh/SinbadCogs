@@ -2,6 +2,7 @@ import asyncio
 import discord
 from discord.ext import commands
 from .utils import checks
+from __main__ import settings
 from cogs.utils.chat_formatting import box, pagify
 from typing import Union
 
@@ -19,20 +20,59 @@ class BanSync:
         self.bot = bot
         self.modlog = self.bot.get_cog('Mod')
 
-    @checks.is_owner()
-    @commands.command(name='globalban', pass_context=True)
+    def can_ban(self, target_id, issuer_id, server):
+        issuer = server.get_member(issuer_id)
+        target = server.get_member(target_id)
+        bot_has_perms = server.me.server_permissions.ban_members
+        if target is not None:
+            bot_has_perms &= server.me.top_role > target.top_role
+            if target == server.owner:
+                return False
+        issuer_isowner = issuer_id == settings.owner
+        issuer_isowner |= issuer_id in self.bot.settings.co_owners
+
+        if self.modlog is not None:
+            if target is None:
+                modset_allows = True
+            elif issuer is None:
+                modset_allows = \
+                    not self.modlog.settings[server.id].get(
+                        "respect_hierarchy", False)
+                modset_allows |= issuer_isowner
+            else:
+                modset_allows = self.modlog.is_allowed_by_hierarchy(
+                    server, issuer, target
+                )
+        else:
+            modset_allows = True
+
+        admin_role_name = settings.get_server_admin(server).lower() \
+            if settings.get_server_admin(server) else None
+        admin_role = discord.utils.find(
+            lambda r: r.name.lower() == admin_role_name, server.roles)
+
+        issuer_canban = issuer_isowner
+        if issuer is not None:
+            issuer |= admin_role in issuer.roles
+            issuer |= issuer == server.owner
+            issuer.server_permissions.ban_members
+
+        return issuer_canban and modset_allows and bot_has_perms
+
+    @commands.command(name='globalban', pass_context=True, aliases=['mjolnir'])
     async def globalban(self, ctx, user: Union[discord.Member, str]):
         """
         ban someone in each server the bot can ban
+        and the command issuer has permission to issue a ban in
         """
         if isinstance(user, discord.Member):
             _id = user.id
         else:
             _id = user
-
-        for server in self.bot.servers:
-            if not server.me.server_permissions.ban_members:
-                continue
+        issuer_id = ctx.message.author.id
+        servers = filter(
+            lambda s: self.can_ban(_id, issuer_id, s), self.bot.servers)
+        for server in servers:
             member = server.get_member(_id)
             if member is not None:
                 try:
@@ -41,11 +81,14 @@ class BanSync:
                     return await self.bot.whisper("I can't do that")
                 else:
                     if self.modlog:
-                        await self.modlog.new_case(
-                            server,
-                            user=member,
-                            action="BAN"
-                        )
+                        try:
+                            await self.modlog.new_case(
+                                server,
+                                user=member,
+                                action="BAN"
+                            )
+                        except Exception:
+                            pass
             else:
                 try:
                     await self.bot.http.ban(user.id, server.id, 0)
@@ -55,11 +98,14 @@ class BanSync:
                     return await self.bot.whisper("I can't do that")
                 else:
                     if self.modlog:
-                        await self.modlog.new_case(
-                            server,
-                            action="HACKBAN",
-                            user=user
-                        )
+                        try:
+                            await self.modlog.new_case(
+                                server,
+                                action="HACKBAN",
+                                user=user
+                            )
+                        except Exception:
+                            pass
 
     @checks.is_owner()
     @commands.command(name='bansync', pass_context=True)
